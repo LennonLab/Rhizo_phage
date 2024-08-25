@@ -1,0 +1,347 @@
+---
+title: "Phage and nitrogen experiment"
+author: "John McMullen"
+date: "11/29/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Late growth experiment to look at the interaction between rhizobia, nitrogen, and lytic phages
+Note: the aposymbiotic plants were contaminated with rhizobia (nodules present).
+
+#Libraries
+```{r}
+library(car) #Anova
+library(tidyverse) #data wrangling and plotting
+library(cowplot) #plotting
+library(emmeans) #post hoc testing
+library(multcomp) #letter ranking
+library(multcompView) #letter ranking
+
+library(vegan) #PCA
+library(corrplot) #corrplot.mixed function
+library(PerformanceAnalytics) #chart.Correlation
+library(psych) #Bartlett's test and KMO
+```
+
+#Data
+```{r}
+dat = read.csv(file = "late-growth_phage_nitrogen_461_262.csv")
+
+dat = dat %>%
+  mutate(micro = ifelse(micro %in% "461", "HQ",
+                        ifelse(micro %in% "262", "LQ","Apo")))
+
+dat$micro = as.factor(dat$micro)
+dat$N = as.factor(dat$N)
+dat$P = as.factor(dat$P)
+```
+
+
+Cohen's d is the mean - mean/pooled sd
+for ci, take 1.645 * sqrt((n+n/n*n)+(d^2/2*(n+n)))
+
+#stolon - effect size
+```{r}
+stol_mean = dat %>%
+  dplyr::select(N,P,micro,stolon) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,P,micro) %>%
+  summarise(mean = mean(stolon),count = length(stolon)) %>%
+  pivot_wider(values_from=mean,names_from=P)
+
+stol_sd = dat %>%
+  dplyr::select(N,P,micro,stolon) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,micro) %>%
+  summarise(sd = sd(stolon))
+
+stol_dat = stol_mean %>%
+  left_join(stol_sd,by = c("N"="N","micro"="micro")) %>%
+  group_by(micro,N) %>%
+  mutate(d = ((`1` - `0`)/sd)) %>%
+  mutate(ci = 1.645* sqrt((count + count) / (count * count) + d^2 / (2 * (count + count)))) %>%
+  mutate(fit_axis = "Stolon")
+```
+
+#flower - effect size
+```{r}
+flow_mean = dat %>%
+  dplyr::select(N,P,micro,flower) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,P,micro) %>%
+  summarise(mean = mean(flower),count = length(flower)) %>%
+  pivot_wider(values_from=mean,names_from=P)
+
+flow_sd = dat %>%
+  dplyr::select(N,P,micro,flower) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,micro) %>%
+  summarise(sd = sd(flower))
+
+flow_dat = flow_mean %>%
+  left_join(flow_sd,by = c("N"="N","micro"="micro")) %>%
+  group_by(micro,N) %>%
+  mutate(d = ((`1` - `0`)/sd)) %>%
+  mutate(ci = 1.645* sqrt((count + count) / (count * count) + d^2 / (2 * (count + count)))) %>%
+  mutate(fit_axis = "Flower")
+```
+
+#flower - effect size
+```{r}
+mass_mean = dat %>%
+  dplyr::select(N,P,micro,plant) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,P,micro) %>%
+  summarise(mean = mean(plant),count = length(plant)) %>%
+  pivot_wider(values_from=mean,names_from=P)
+
+mass_sd = dat %>%
+  dplyr::select(N,P,micro,plant) %>%
+  filter(!micro %in% "Apo") %>%
+  group_by(N,micro) %>%
+  summarise(sd = sd(plant))
+
+mass_dat = mass_mean %>%
+  left_join(mass_sd,by = c("N"="N","micro"="micro")) %>%
+  group_by(micro,N) %>%
+  mutate(d = ((`1` - `0`)/sd)) %>%
+  mutate(ci = 1.645* sqrt((count + count) / (count * count) + d^2 / (2 * (count + count)))) %>%
+  mutate(fit_axis = "Biomass")
+```
+
+#effect size plot
+```{r}
+effect_dat = stol_dat %>%
+  ungroup() %>%
+  add_row(flow_dat %>% ungroup()) %>%
+  add_row(mass_dat %>% ungroup())
+
+effect_dat$micro = factor(effect_dat$micro,levels=c("LQ","HQ"))
+effect_dat$fit_axis = factor(effect_dat$fit_axis,levels=c("Stolon","Flower","Biomass"))
+
+ggplot(data = effect_dat,
+       aes(x = d, y = fit_axis, color = N)) +
+  geom_errorbar(aes(xmin = d-ci, xmax = d+ci),width=0.1,position = position_dodge(width = 0.8)) +
+  geom_vline(xintercept = 0,linetype="dashed") +
+  geom_point(size = 5,position = position_dodge(width = 0.8)) +
+  scale_color_manual(values=c("black","darkgray")) +
+  scale_x_continuous(limits = c(-3,2),breaks = seq(-3,2,by=1)) +
+  xlab(expression("Cohen's D \u00B1 CI")) +
+  ylab("Fitness components") +
+  facet_grid(.~micro) +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)),
+        axis.title.y = element_text(size=rel(0.9)))
+```
+
+##########################
+Supplemental
+
+#Plot stolon
+```{r}
+stolon_apo_mean = dat %>%
+  filter(micro %in% "Apo") %>%
+  group_by(N) %>%
+  summarise(mean = geometric.mean(stolon))
+
+#removed nonsignificant mixed effects to simplify
+stol.mdl = glm(stolon ~ micro * N * P,family = poisson(link = "log"),data = dat %>% filter(!micro %in% "Apo"))
+
+AIC(stol.mdl)
+
+summary(stol.mdl)
+
+#assess normality
+stol.res = residuals(stol.mdl)
+summary(stol.res)
+qqPlot(stol.res)
+hist(stol.res)
+boxplot(stol.res)
+
+#assess homoscedasticity
+plot(fitted(stol.mdl),stol.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(stol.mdl),stol.res));
+
+#ANOVA test table
+Anova(stol.mdl,type="II")
+
+#test for post hos testing
+stol.emmeans = emmeans(stol.mdl, ~ P | N*micro,type="response",level=0.9)
+pairs(stol.emmeans)
+
+#plot
+stolon = ggplot(data = as.data.frame(stol.emmeans),
+       aes(x = P, y = rate, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),width=0.1,position = position_dodge(width = 0.5)) +
+  geom_line(position = position_dodge(width = 0.5))+
+  geom_hline(yintercept = 4.9,linetype="dashed") +
+  geom_hline(yintercept = 9.5,linetype="dashed",color="darkgray") +
+  geom_point(size = 5,position = position_dodge(width = 0.5)) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,15),breaks = seq(0,15,by=5)) +
+  facet_grid(.~factor(micro,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Stolon count","mean \u00B1 CI (n = 5)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#Plot flower
+```{r}
+flower_apo_mean = dat %>%
+  filter(micro %in% "Apo") %>%
+  mutate(flower = ifelse(flower == 0, 1, flower)) %>%
+  group_by(N) %>%
+  summarise(mean = geometric.mean(flower))
+
+#removed nonsignificant mixed effects to simplify
+flow.mdl = glm(flower ~ micro * N * P,family = quasipoisson(link = "log"),data = dat %>% filter(!micro %in% "Apo"))
+
+AIC(flow.mdl)
+
+summary(flow.mdl)
+
+#assess normality
+flow.res = residuals(flow.mdl)
+summary(flow.res)
+qqPlot(flow.res)
+hist(flow.res)
+boxplot(flow.res)
+
+#assess homoscedasticity
+plot(fitted(flow.mdl),flow.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(flow.mdl),flow.res));
+
+#ANOVA test table
+Anova(flow.mdl,type="II")
+
+#test for post hos testing
+flow.emmeans = emmeans(flow.mdl, ~ P | N*micro,type="response",level=0.9)
+pairs(flow.emmeans)
+
+#plot
+flower = ggplot(data = as.data.frame(flow.emmeans),
+       aes(x = P, y = rate, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),width=0.1,position = position_dodge(width = 0.5)) +
+  geom_line(position = position_dodge(width = 0.5))+
+  geom_hline(yintercept = 6.84,linetype="dashed") +
+  geom_hline(yintercept = 8.07,linetype="dashed",color="darkgray") +
+  geom_point(size = 5,position = position_dodge(width = 0.5)) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,50),breaks = seq(0,50,by=10)) +
+  facet_grid(.~factor(micro,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Flower count","mean \u00B1 CI (n = 5)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_blank(),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_blank(),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#Plot biomass
+```{r}
+biomass_apo_mean = dat %>%
+  filter(micro %in% "Apo") %>%
+  group_by(N) %>%
+  summarise(mean = mean(plant))
+
+#removed nonsignificant mixed effects to simplify
+biomass.mdl = lm(plant ~ micro * N * P,data = dat %>% filter(!micro %in% "Apo"))
+
+AIC(biomass.mdl)
+
+summary(biomass.mdl)
+
+#assess normality
+biomass.res = residuals(biomass.mdl)
+summary(biomass.res)
+qqPlot(biomass.res)
+hist(biomass.res)
+boxplot(biomass.res)
+
+#assess homoscedasticity
+plot(fitted(biomass.mdl),biomass.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(biomass.mdl),biomass.res));
+
+#ANOVA test table
+Anova(biomass.mdl,type="II")
+
+#test for post hos testing
+biomass.emmeans = emmeans(biomass.mdl, ~ P | N*micro,type="response",level=0.9)
+pairs(biomass.emmeans)
+
+#plot
+mass = ggplot(data = as.data.frame(biomass.emmeans),
+       aes(x = P, y = emmean, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),width=0.1,position = position_dodge(width = 0.5)) +
+  geom_line(position = position_dodge(width = 0.5))+
+  geom_hline(yintercept = 3.24,linetype="dashed") +
+  geom_hline(yintercept = 3,linetype="dashed",color="darkgray") +
+  geom_point(size = 5,position = position_dodge(width = 0.5)) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,10),breaks = seq(0,10,by=5)) +
+  facet_grid(.~factor(micro,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Biomass [g]","mean \u00B1 CI (n = 5)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_blank(),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_blank(),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#join three plots together
+```{r}
+flower <- flower + theme(plot.margin = margin(0.75, 0.75, 0.75, 0.75, "cm"))
+stolon <- stolon + theme(plot.margin = margin(0.75, 0.75, 0.75, 0.75, "cm"))
+mass <- mass + theme(plot.margin = margin(0.75, 0.75, 0.75, 0.75, "cm"))
+
+legend <- get_legend( mass + 
+                          theme(legend.position = "right", 
+                                legend.justification = "center",
+                                legend.box.just = "right")
+            )
+
+plot_grid(
+  plot_grid(mass, flower, stolon, ncol = 1, nrow = 3, 
+            labels = c("A.)", "B.)", "C.)"), 
+            label_size = 20),
+  legend,
+  rel_widths = c(2, 0.2),  # Adjust the relative width if needed
+  ncol = 2, 
+  align = "v", 
+  axis = "tb"
+)
+```

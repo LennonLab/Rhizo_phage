@@ -1,0 +1,677 @@
+---
+title: "Figure2 and supplemental Fig1"
+author: "John McMullen"
+date: "2024-08-18"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#Libraries
+```{r}
+library(tidyverse) #data wrangling and plotting
+library(cowplot) #plotting
+library(lme4) #mixed effect modeling
+library(car) #Anova function
+library(emmeans) #post hoc testing
+```
+
+#Data
+```{r}
+#greenhouse experiment data
+dat = read.csv("plantxphagexN_greenhouse_R.csv")
+
+#fix the label for microbial treatments
+dat = dat %>%
+  mutate(Microbe = ifelse(Microbe == '461', 'HQ',
+                           ifelse(Microbe == '262', 'LQ', 'Apo')))
+
+#fix days
+#remove the d from numbers and convert to numeric
+dat$days = gsub('d','',dat$days)
+dat$days = as.numeric(dat$days)
+
+#adjust to factors
+dat$Block = as.factor(dat$Block)
+dat$incubator = as.factor(dat$incubator)
+dat$pos = as.factor(dat$pos)
+dat$Contamination = as.factor(dat$Contamination)
+dat$plant.initials = as.factor(dat$plant.initials)
+dat$Microbe = as.factor(dat$Microbe)
+dat$N = as.factor(dat$N)
+dat$P = as.factor(dat$P)
+```
+
+#Contamination
+```{r}
+View(dat %>% 
+      filter(Microbe %in% "Apo") %>% 
+      mutate(Contamination = as.numeric(as.character(Contamination))) %>%
+      dplyr::select(Block,Contamination) %>%
+      na.omit() %>%
+      group_by(Block) %>% 
+      summarise(cont_p = sum(Contamination)/length(Contamination),
+                count = sum(Contamination),
+                total = length(Contamination))
+)
+```
+
+
+#Plant biomass model and graph
+```{r}
+#setup data for type III ANOVA
+#remove the contaminated plants in Apo, initial phage marginal effects (phage in no N, p = 0.0924)
+plnt_mass = dat %>%
+  dplyr::select(Block,incubator,pos,plant.2d,Microbe,N,P,days,plant.initials,Contamination) %>%
+  rename(plnt_mass = plant.2d) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  filter(!Contamination %in% '1') %>%
+  dplyr::select(!Contamination)
+
+#mixed effect model; drop the days_centered (p = 0.80528); otherwise effects are the same
+#plnt_mass.mdl = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = plnt_mass)
+
+plnt_mass.mdl = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = plnt_mass)
+
+AIC(plnt_mass.mdl) #adding log drops the AIC from 127.3685 to 93.16548 and improves normality and heteroscedasticity
+
+summary(plnt_mass.mdl)
+
+#effect of harvester
+plnt_mass.mdl.dropH = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos),data = plnt_mass)
+
+anova(plnt_mass.mdl,plnt_mass.mdl.dropH) # p = 1, no effect
+
+#effect of incubator
+plnt_mass.mdl.dropI = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | Block) + (1 | pos) + (1 | plant.initials),data = plnt_mass)
+
+anova(plnt_mass.mdl,plnt_mass.mdl.dropI) # p = 0.4875, no effect
+
+#effect of block
+plnt_mass.mdl.dropB = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = plnt_mass)
+
+anova(plnt_mass.mdl,plnt_mass.mdl.dropB) # p = 0.05487, marginal effect
+
+#effect of position
+plnt_mass.mdl.dropP = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | plant.initials),data = plnt_mass)
+
+anova(plnt_mass.mdl,plnt_mass.mdl.dropP) # p = 1, no effect
+
+#removed nonsignificant mixed effects to simplify
+plnt_mass.mdl = lmer(log10(plnt_mass*1000) ~ Microbe * N * P + (1 | Block),data = plnt_mass)
+
+AIC(plnt_mass.mdl) #removing random effects the AIC from 93.16548 to 87.74142
+
+summary(plnt_mass.mdl)
+
+#assess normality
+plnt_mass.res = residuals(plnt_mass.mdl)
+summary(plnt_mass.res)
+qqPlot(plnt_mass.res)
+hist(plnt_mass.res)
+boxplot(plnt_mass.res)
+
+#assess homoscedasticity
+plot(fitted(plnt_mass.mdl),plnt_mass.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(plnt_mass.mdl),plnt_mass.res));
+
+#ANOVA test table
+Anova(plnt_mass.mdl,type="II",test.statistic = "F")
+
+#test for post hos testing
+plnt_mass.emmeans = emmeans(plnt_mass.mdl, ~ P | N*Microbe)
+pairs(plnt_mass.emmeans)
+
+#number of replicates
+plnt_mass.reps = plnt_mass %>%
+  dplyr::select(Microbe, N, P,plnt_mass) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(plnt_mass))
+
+#plot
+plant = ggplot(data = as.data.frame(plnt_mass.emmeans),
+       aes(x = P, y = emmean, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = emmean-SE, ymax = emmean+SE),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(1,4),breaks = seq(1,4,by=1)) +
+  facet_grid(.~factor(Microbe,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop(Log[10]~"(plant biomass [mg])","mean \u00B1 SE (n = 7-12)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_blank(),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_blank(),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#Nodule biomass model and graph
+```{r}
+#setup data for type III ANOVA
+ndl_mass = dat %>%
+  dplyr::select(Block,incubator,pos,nod_weight_mg,Microbe,N,P,days,plant.initials) %>%
+  rename(ndl_mass = nod_weight_mg) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  filter(!Microbe %in% 'Apo')
+
+#mixed effect model; drop the days_centered (p = 0.65454); otherwise effects are the same
+#ndl_mass.mdl = lmer(ndl_mass*1000 ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = ndl_mass)
+
+ndl_mass.mdl = lmer(ndl_mass*1000 ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = ndl_mass)
+
+AIC(ndl_mass.mdl)
+
+summary(ndl_mass.mdl)
+
+#effect of harvester
+ndl_mass.mdl.dropH = lmer(ndl_mass*1000 ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos),data = ndl_mass)
+
+anova(ndl_mass.mdl,ndl_mass.mdl.dropH) # p = 1, no effect
+
+#effect of incubator
+ndl_mass.mdl.dropI = lmer(ndl_mass*1000 ~ Microbe * N * P + (1 | Block) + (1 | pos) + (1 | plant.initials),data = ndl_mass)
+
+anova(ndl_mass.mdl,ndl_mass.mdl.dropI) # p = 0.7398, no effect
+
+#effect of block
+ndl_mass.mdl.dropB = lmer(ndl_mass*1000 ~ Microbe * N * P + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = ndl_mass)
+
+anova(ndl_mass.mdl,ndl_mass.mdl.dropB) # p = 0.4189, no effect
+
+#effect of position
+ndl_mass.mdl.dropP = lmer(ndl_mass*1000 ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | plant.initials),data = ndl_mass)
+
+anova(ndl_mass.mdl,ndl_mass.mdl.dropP) # p = 0.393, no effect
+
+#removed nonsignificant mixed effects to simplify
+ndl_mass.mdl = lm(ndl_mass*1000 ~ Microbe * N * P,data = ndl_mass)
+
+AIC(ndl_mass.mdl)
+
+summary(ndl_mass.mdl)
+
+#assess normality
+ndl_mass.res = residuals(ndl_mass.mdl)
+summary(ndl_mass.res)
+qqPlot(ndl_mass.res)
+hist(ndl_mass.res)
+boxplot(ndl_mass.res)
+
+#assess homoscedasticity
+plot(fitted(ndl_mass.mdl),ndl_mass.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(ndl_mass.mdl),ndl_mass.res));
+
+#ANOVA test table
+Anova(ndl_mass.mdl,type="II",test.statistic = "F")
+
+#test for post hos testing
+ndl_mass.emmeans = emmeans(ndl_mass.mdl, ~ P | N*Microbe)
+pairs(ndl_mass.emmeans)
+
+#number of replicates
+ndl_mass.reps = ndl_mass %>%
+  dplyr::select(Microbe, N, P,ndl_mass) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(ndl_mass))
+
+#plot
+nod = ggplot(data = as.data.frame(ndl_mass.emmeans),
+       aes(x = P, y = emmean, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = emmean-SE, ymax = emmean+SE),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,1250),breaks = seq(0,1250,by=250)) +
+  facet_grid(.~factor(Microbe,levels = c("LQ","HQ"))) +
+  ylab(expression(atop("Nodule biomass [\u00B5g]","mean \u00B1 SE (n = 7-12)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_blank(),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_blank(),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#Chlorophyll content model and graph
+```{r}
+#setup data for type III ANOVA
+chlr = dat %>%
+  dplyr::select(Block,incubator,pos,chlor,Microbe,N,P,days,plant.initials,Contamination) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  filter(!Contamination %in% '1') %>%
+  dplyr::select(!Contamination)
+
+#mixed effect model; drop the days_centered (p = 0.33271); otherwise effects are the same
+#chlr.mdl = lmer(chlor ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = chlr)
+
+chlr.mdl = lmer(chlor ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = chlr)
+
+AIC(chlr.mdl)
+
+summary(chlr.mdl)
+
+#effect of harvester
+chlr.mdl.dropH = lmer(chlor ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos),data = chlr)
+
+anova(chlr.mdl,chlr.mdl.dropH) # p = 0.2639, no effect
+
+#effect of incubator
+chlr.mdl.dropI = lmer(chlor ~ Microbe * N * P + (1 | Block) + (1 | pos) + (1 | plant.initials),data = chlr)
+
+anova(chlr.mdl,chlr.mdl.dropI) # p = 1, no effect
+
+#effect of block
+chlr.mdl.dropB = lmer(chlor ~ Microbe * N * P + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = chlr)
+
+anova(chlr.mdl,chlr.mdl.dropB) # p = 0.1043, no effect
+
+#effect of position
+chlr.mdl.dropP = lmer(chlor ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | plant.initials),data = chlr)
+
+anova(chlr.mdl,chlr.mdl.dropP) # p = 0.4344, no effect
+
+#removed nonsignificant mixed effects to simplify
+chlr.mdl = lm(chlor ~ Microbe * N * P,data = chlr)
+
+AIC(chlr.mdl)
+
+summary(chlr.mdl)
+
+#assess normality
+chlr.res = residuals(chlr.mdl)
+summary(chlr.res)
+qqPlot(chlr.res)
+hist(chlr.res)
+boxplot(chlr.res)
+
+#assess homoscedasticity
+plot(fitted(chlr.mdl),chlr.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(chlr.mdl),chlr.res));
+
+#ANOVA test table
+Anova(chlr.mdl,type="II",test.statistic = "F")
+
+#test for post hos testing
+chlr.emmeans = emmeans(chlr.mdl, ~ P | N*Microbe)
+pairs(chlr.emmeans)
+
+#number of replicates
+chlr.reps = chlr %>%
+  dplyr::select(Microbe, N, P,chlor) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(chlor))
+
+#plot
+chlorophyll = ggplot(data = as.data.frame(chlr.emmeans),
+       aes(x = P, y = emmean, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = emmean-SE, ymax = emmean+SE),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(10,40),breaks = seq(10,40,by=10)) +
+  facet_grid(.~factor(Microbe,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Chlorophyll content","mean \u00B1 SE (n = 7-12)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#leghemoglobin model and graph
+```{r}
+#setup data for type III ANOVA
+hemo = dat %>%
+  dplyr::select(Block,incubator,pos,hemo_nod,Microbe,N,P,days,plant.initials) %>%
+  rename(hemo = hemo_nod) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  filter(!Microbe %in% 'Apo')
+
+#mixed effect model; drop the days_centered (p = 0.98432); otherwise effects are the same
+#hemo.mdl = lmer(log(hemo) ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = hemo)
+
+hemo.mdl = lmer(log(hemo) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos),data = hemo)
+
+AIC(hemo.mdl)
+
+summary(hemo.mdl)
+
+
+#effect of incubator
+hemo.mdl.dropI = lmer(log(hemo) ~ Microbe * N * P + (1 | Block) + (1 | pos),data = hemo)
+
+anova(hemo.mdl,hemo.mdl.dropI) # p = 1, no effect
+
+#effect of block
+hemo.mdl.dropB = lmer(log(hemo) ~ Microbe * N * P + (1 | incubator) + (1 | pos),data = hemo)
+
+anova(hemo.mdl,hemo.mdl.dropB) # p = 1, no effect
+
+#effect of position
+hemo.mdl.dropP = lmer(log(hemo) ~ Microbe * N * P + (1 | Block) + (1 | incubator) ,data = hemo)
+
+anova(hemo.mdl,hemo.mdl.dropP) # p = 0.6869, no effect
+
+#removed nonsignificant mixed effects to simplify
+hemo.mdl = lm(log(hemo) ~ Microbe * N * P,data = hemo)
+
+AIC(hemo.mdl) #AIC from 141.5578 to 129.2791
+
+summary(hemo.mdl)
+
+#assess normality
+hemo.res = residuals(hemo.mdl)
+summary(hemo.res)
+qqPlot(hemo.res)
+hist(hemo.res)
+boxplot(hemo.res)
+
+#assess homoscedasticity
+plot(fitted(hemo.mdl),hemo.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(hemo.mdl),hemo.res));
+
+#ANOVA test table
+Anova(hemo.mdl,type="II",test.statistic = "F")
+
+#test for post hos testing
+hemo.emmeans = emmeans(hemo.mdl, ~ P | N*Microbe)
+pairs(hemo.emmeans)
+
+#number of replicates
+hemo.reps = hemo %>%
+  dplyr::select(Microbe, N, P,hemo) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(hemo))
+
+#plot
+legh = ggplot(data = as.data.frame(hemo.emmeans),
+       aes(x = P, y = emmean, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = emmean-SE, ymax = emmean+SE),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(-1,2),breaks = seq(-1,2,by=1)) +
+  facet_grid(.~factor(Microbe,levels = c("LQ","HQ"))) +
+  ylab(expression(atop("Log(leghemoglobin content)","mean \u00B1 SE (n = 6-8)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 20) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)),
+        axis.title.y = element_text(size=rel(0.9)),
+        legend.position = "none")
+```
+
+#correlation with N indices
+```{r}
+cor.test(dat$chlor,dat$plant.2d,method="spearman")
+cor.test(dat$chlor,dat$nod_weight_mg,method="spearman")
+
+cor.test(dat$hemo_nod,dat$plant.2d,method="spearman")
+cor.test(dat$hemo_nod,dat$nod_weight_mg,method="spearman")
+```
+
+
+#join four plots together
+```{r}
+plant <- plant + theme(plot.margin = margin(0.75, 0.75, 0.75, 0.75, "cm"))
+nod <- nod + theme(plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"))
+chlorophyll <- chlorophyll + theme(plot.margin = margin(0.75, 0.75, 0.75, 0.75, "cm"))
+legh <- legh + theme(plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"))
+
+legend <- get_legend( plant + 
+                          theme(legend.position = "right", 
+                                legend.justification = "center",
+                                legend.box.just = "right")
+            )
+
+plot_grid(
+  plot_grid(plant, nod, chlorophyll, legh, ncol = 2, nrow = 2, 
+            labels = c("A.)", "B.)", "C.)", "D.)"), 
+            label_size = 20),
+  legend,
+  rel_widths = c(2, 0.1),  # Adjust the relative width if needed
+  ncol = 2, 
+  align = "v", 
+  axis = "tb"
+)
+```
+
+########################
+#Supplemental material
+
+#Stolon count model and graph
+```{r}
+#setup data for type III ANOVA
+#add 1 stolon to Apo no phage, no N to stabilize model
+#remove the contaminated plants in Apo, initial phage effects (phage in no N, p = 0.0482)
+stln_count = dat %>%
+  dplyr::select(Block,incubator,pos,stolon,Microbe,N,P,days,plant.initials,Contamination) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  mutate(row_id = row_number()) %>%
+  mutate(stolon = ifelse(row_id == 144,1,stolon)) %>%
+  mutate(stolon = ifelse(row_id == 136,1,stolon)) %>%
+  filter(!Contamination %in% '1') %>%
+  dplyr::select(!Contamination)
+
+#mixed effect model; days had effect (p = 0.023545)
+stln_count.mdl = glmer(stolon ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials) + (1 | row_id),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+AIC(stln_count.mdl) 
+
+summary(stln_count.mdl)
+
+#effect of harvester
+stln_count.mdl.dropH = glmer(stolon ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | row_id),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+anova(stln_count.mdl,stln_count.mdl.dropH) # p = 0.0002416, effect
+
+#effect of incubator
+stln_count.mdl.dropI = glmer(stolon ~ Microbe * N * P + days_centered + (1 | Block) + (1 | pos) + (1 | plant.initials) + (1 | row_id),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+anova(stln_count.mdl,stln_count.mdl.dropI) # p = 0.9999, no effect
+
+#effect of block
+stln_count.mdl.dropB = glmer(stolon ~ Microbe * N * P + days_centered + (1 | incubator) + (1 | pos) + (1 | plant.initials) + (1 | row_id),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+anova(stln_count.mdl,stln_count.mdl.dropB) # p = 1, no effect
+
+#effect of position
+stln_count.mdl.dropP = glmer(stolon ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | plant.initials) + (1 | row_id),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+anova(stln_count.mdl,stln_count.mdl.dropP) # p = 1, no effect
+
+#observation level random effect
+stln_count.mdl.olre = glmer(stolon ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+anova(stln_count.mdl,stln_count.mdl.olre) # p = 1, no effect
+
+#removed nonsignificant mixed effects to simplify
+stln_count.mdl = glmer(stolon ~ Microbe * N * P + days_centered + (1 | plant.initials),family=poisson(link = "log"),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = stln_count,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e9)))
+
+AIC(stln_count.mdl) #removing random effects the AIC from 397.7993 to 389.7993
+
+summary(stln_count.mdl)
+
+#assess normality
+stln_count.res = residuals(stln_count.mdl)
+summary(stln_count.res)
+qqPlot(stln_count.res)
+hist(stln_count.res)
+boxplot(stln_count.res)
+
+#assess homoscedasticity
+plot(fitted(stln_count.mdl),stln_count.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(stln_count.mdl),stln_count.res));
+
+#ANOVA test table
+Anova(stln_count.mdl,type="III",test.statistic = "Chisq")
+
+#test for post hos testing
+stln_count.emmeans = emmeans(stln_count.mdl, ~ P | N*Microbe,at = list(days_centered = 0),type="response")
+pairs(stln_count.emmeans)
+
+#number of replicates
+stln_count.reps = stln_count %>%
+  dplyr::select(Microbe, N, P,stolon) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(stolon))
+
+#plot
+ggplot(data = as.data.frame(stln_count.emmeans),
+       aes(x = P, y = rate, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,10),breaks = seq(0,10,by=5)) +
+  facet_grid(.~factor(Microbe,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Stolon count","mean \u00B1 CI (n = 7-12)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 30) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)))
+```
+
+#Plant height model and graph
+```{r}
+#setup data for type III ANOVA
+#remove the contaminated plants in Apo, initial phage effects (phage in no N, p = 0.0153)
+plnt_height = dat %>%
+  dplyr::select(Block,incubator,pos,height,Microbe,N,P,days,plant.initials,Contamination) %>%
+  rename(plnt_height = height) %>%
+  mutate(days_centered = scale(days,scale = FALSE)) %>%
+  filter(!Contamination %in% '1') %>%
+  dplyr::select(!Contamination)
+
+#mixed effect model; drop the days_centered (p = 0.95635); otherwise effects are the same
+#plnt_height.mdl = lmer(log(plnt_height) ~ Microbe * N * P + days_centered + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),contrasts=list(Microbe='contr.sum', N='contr.sum', P='contr.sum'),data = plnt_height)
+
+plnt_height.mdl = lmer(log(plnt_height) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = plnt_height)
+
+AIC(plnt_height.mdl) #adding log drops the AIC from 773.631 to 4.100779 and improves normality and heteroscedasticity
+
+summary(plnt_height.mdl)
+
+#effect of harvester
+plnt_height.mdl.dropH = lmer(log(plnt_height) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | pos),data = plnt_height)
+
+anova(plnt_height.mdl,plnt_height.mdl.dropH) # p = 1, no effect
+
+#effect of incubator
+plnt_height.mdl.dropI = lmer(log(plnt_height) ~ Microbe * N * P + (1 | Block) + (1 | pos) + (1 | plant.initials),data = plnt_height)
+
+anova(plnt_height.mdl,plnt_height.mdl.dropI) # p = 1, no effect
+
+#effect of block
+plnt_height.mdl.dropB = lmer(log(plnt_height) ~ Microbe * N * P + (1 | incubator) + (1 | pos) + (1 | plant.initials),data = plnt_height)
+
+anova(plnt_height.mdl,plnt_height.mdl.dropB) # p = 1, no effect
+
+#effect of position
+plnt_height.mdl.dropP = lmer(log(plnt_height) ~ Microbe * N * P + (1 | Block) + (1 | incubator) + (1 | plant.initials),data = plnt_height)
+
+anova(plnt_height.mdl,plnt_height.mdl.dropP) # p = 0.8337, no effect
+
+#removed nonsignificant mixed effects to simplify
+plnt_height.mdl = lm(log(plnt_height) ~ Microbe * N * P,data = plnt_height)
+
+AIC(plnt_height.mdl) #removing random effects the AIC from 4.100779 to -90.57073
+
+summary(plnt_height.mdl)
+
+#assess normality
+plnt_height.res = residuals(plnt_height.mdl)
+summary(plnt_height.res)
+qqPlot(plnt_height.res)
+hist(plnt_height.res)
+boxplot(plnt_height.res)
+
+#assess homoscedasticity
+plot(fitted(plnt_height.mdl),plnt_height.res);
+abline(h=0,lty=2);
+lines(smooth.spline(fitted(plnt_height.mdl),plnt_height.res));
+
+#ANOVA test table
+Anova(plnt_height.mdl,type="II",test.statistic = "F")
+
+#test for post hos testing
+plnt_height.emmeans = emmeans(plnt_height.mdl, ~ P | N*Microbe,type="response")
+pairs(plnt_height.emmeans)
+
+#number of replicates
+plnt_height.reps = plnt_height %>%
+  dplyr::select(Microbe, N, P,plnt_height) %>%
+  na.omit() %>%
+  group_by(Microbe, N, P) %>%
+  summarise(count = length(plnt_height))
+
+#plot
+ggplot(data = as.data.frame(plnt_height.emmeans),
+       aes(x = P, y = response, color = N, shape = P, group = N, fill = P)) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),width=0.1) +
+  geom_line(aes(linetype = N)) +
+  geom_point(size = 5) +
+  scale_color_manual(values=c("black","darkgrey")) +
+  scale_shape_manual(values=c(21,19)) +
+  scale_fill_manual(values = c("white","white")) +
+  scale_y_continuous(limits = c(0,30),breaks = seq(0,30,by=15)) +
+  facet_grid(.~factor(Microbe,levels = c("Apo","LQ","HQ"))) +
+  ylab(expression(atop("Plant height [cm]","mean \u00B1 CI (n = 7-12)"))) +
+  xlab("Phage addition") +
+  theme_bw(base_size = 30) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(size = 1, colour = "black",fill=NA),
+        panel.background = element_rect(fill="white"),
+        axis.text.x=element_text(size=rel(0.9)),
+        axis.text.y=element_text(size=rel(0.9)),
+        axis.title.x =element_text(size=rel(0.9)))
+```
